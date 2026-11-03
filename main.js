@@ -1,9 +1,9 @@
-
 // SPDX-License-Identifier: MIT
 /*
 Fizzpixl -- A single file javascript pixel editor
 
 For now, it only runs in the browser. but feel free to port it
+(at least the main implementation for the editor)
 
 -- GDDASH45 (on Github)
 
@@ -19,9 +19,75 @@ Version history:
     Undo/Redo, zoom, grid, eyedropper, selection,
     keyboard shortcuts, project saving and loading,
     line tool, clipboard support
+
+0.4.0:
+    Add FZPX project header
 */
 
 "use strict";
+
+// FZPX
+const FZPX = {
+    MAGIC: "FZPX",
+    VERSION: 1,
+    HEADER_SIZE: 16,
+
+    write(fileCount, metadataOffset) {
+        const buffer = new ArrayBuffer(this.HEADER_SIZE);
+        const view = new DataView(buffer);
+
+        for (let i = 0; i < 4; i++) {
+            view.setUint8(i, this.MAGIC.charCodeAt(i));
+        }
+
+        view.setUint16(4, this.VERSION, true);
+        view.setUint16(6, this.HEADER_SIZE, true);
+        view.setUint32(8, fileCount, true);
+        view.setUint32(12, metadataOffset, true);
+
+        return new Uint8Array(buffer);
+    },
+
+    read(data) {
+        if (data.length < this.HEADER_SIZE) {
+            throw new Error("FZPX: File is too small");
+        }
+
+        const view = new DataView(
+            data.buffer,
+            data.byteOffset,
+            data.byteLength
+        );
+
+        let magic = "";
+
+        for (let i = 0; i < 4; i++) {
+            magic += String.fromCharCode(view.getUint8(i));
+        }
+
+        if (magic !== this.MAGIC) {
+            throw new Error("FZPX: Invalid magic header");
+        }
+
+        const version = view.getUint16(4, true);
+        const headerSize = view.getUint16(6, true);
+
+        if (version !== this.VERSION) {
+            throw new Error(`FZPX: Unsupported version ${version}`);
+        }
+
+        if (headerSize < this.HEADER_SIZE || headerSize > data.length) {
+            throw new Error("FZPX: Invalid header size");
+        }
+
+        return {
+            version,
+            headerSize,
+            fileCount: view.getUint32(8, true),
+            metadataOffset: view.getUint32(12, true)
+        };
+    }
+};
 
 // Configuration
 
@@ -84,6 +150,22 @@ style.textContent = `
     button:disabled {
         opacity: 0.4;
         cursor: not-allowed;
+    }
+
+    #project-file-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+    }
+
+    #project-file-select {
+        background: #333;
+        color: white;
+        border: 1px solid #666;
+        border-radius: 4px;
+        padding: 8px;
+        min-width: 180px;
     }
 
     #canvas-viewport {
@@ -237,6 +319,7 @@ function makeButton(name, callback, parent = toolbar) {
     return button;
 }
 
+
 // Drawing state
 
 let color = "#ffffff";
@@ -272,6 +355,171 @@ editor.appendChild(status);
 
 function setStatus(message) {
     status.textContent = message;
+}
+
+// Project files
+
+const projectFiles = [];
+let activeProjectFile = 0;
+let nextProjectFileId = 1;
+
+const projectFileBar = document.createElement("div");
+projectFileBar.id = "project-file-bar";
+
+const projectFileSelect = document.createElement("select");
+projectFileSelect.id = "project-file-select";
+projectFileSelect.title = "Active project file";
+
+projectFileBar.appendChild(projectFileSelect);
+editor.insertBefore(projectFileBar, viewport);
+
+function makeProjectFile(name, imageData = null) {
+    return {
+        id: nextProjectFileId++,
+        name,
+        imageData
+    };
+}
+
+function syncActiveProjectFile() {
+    const file = projectFiles.find(item => item.id === activeProjectFile);
+
+    if (file) {
+        file.imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+    }
+}
+
+function updateProjectFileList() {
+    projectFileSelect.replaceChildren();
+
+    for (const file of projectFiles) {
+        const option = document.createElement("option");
+        option.value = String(file.id);
+        option.textContent = file.name;
+        projectFileSelect.appendChild(option);
+    }
+
+    projectFileSelect.value = String(activeProjectFile);
+}
+
+function resetEditorHistory() {
+    undoStack = [];
+    redoStack = [];
+    updateHistoryButtons();
+    selection = null;
+    selectionClipboard = null;
+    movingSelection = false;
+    selectionImage = null;
+    clearPreview();
+}
+
+function switchProjectFile(id) {
+    const target = projectFiles.find(file => file.id === Number(id));
+    if (!target || target.id === activeProjectFile) return;
+
+    syncActiveProjectFile();
+    activeProjectFile = target.id;
+
+    ctx.putImageData(target.imageData, 0, 0);
+    resetEditorHistory();
+    updateProjectFileList();
+    setStatus("Opened " + target.name);
+}
+
+projectFileSelect.addEventListener("change", () => {
+    switchProjectFile(projectFileSelect.value);
+});
+
+function createProjectFile(name = "untitled.png") {
+    syncActiveProjectFile();
+
+    const imageData = ctx.createImageData(WIDTH, HEIGHT);
+    for (let i = 0; i < imageData.data.length; i += 4) {
+        imageData.data[i] = 0;
+        imageData.data[i + 1] = 0;
+        imageData.data[i + 2] = 0;
+        imageData.data[i + 3] = 255;
+    }
+
+    const file = makeProjectFile(name, imageData);
+    projectFiles.push(file);
+    activeProjectFile = file.id;
+    ctx.putImageData(imageData, 0, 0);
+
+    resetEditorHistory();
+    updateProjectFileList();
+    setStatus("Created " + file.name);
+}
+
+makeButton("New File", () => {
+    const name = prompt("New image filename:", "untitled.png");
+    if (name === null) return;
+
+    const cleanName = name.trim();
+    if (!cleanName) {
+        alert("A filename is required.");
+        return;
+    }
+
+    createProjectFile(cleanName);
+}, projectFileBar);
+
+makeButton("Rename File", () => {
+    const file = projectFiles.find(item => item.id === activeProjectFile);
+    if (!file) return;
+
+    const name = prompt("Rename image:", file.name);
+    if (name === null) return;
+
+    const cleanName = name.trim();
+    if (!cleanName) {
+        alert("A filename is required.");
+        return;
+    }
+
+    file.name = cleanName;
+    updateProjectFileList();
+    setStatus("Renamed file to " + cleanName);
+}, projectFileBar);
+
+makeButton("Delete File", () => {
+    if (projectFiles.length <= 1) {
+        alert("A project must contain at least one image.");
+        return;
+    }
+
+    const index = projectFiles.findIndex(file => file.id === activeProjectFile);
+    if (index < 0) return;
+
+    const file = projectFiles[index];
+    if (!confirm("Delete " + file.name + "?")) return;
+
+    projectFiles.splice(index, 1);
+    const next = projectFiles[Math.min(index, projectFiles.length - 1)];
+    activeProjectFile = next.id;
+
+    ctx.putImageData(next.imageData, 0, 0);
+
+    resetEditorHistory();
+    updateProjectFileList();
+    setStatus("Deleted " + file.name);
+}, projectFileBar);
+
+function loadProjectFiles(files) {
+    if (!Array.isArray(files) || files.length === 0) {
+        throw new Error("Project contains no image files");
+    }
+
+    projectFiles.length = 0;
+
+    for (const file of files) {
+        projectFiles.push(makeProjectFile(file.name, file.imageData));
+    }
+
+    activeProjectFile = projectFiles[0].id;
+    ctx.putImageData(projectFiles[0].imageData, 0, 0);
+    resetEditorHistory();
+    updateProjectFileList();
 }
 
 // History
@@ -530,33 +778,7 @@ makeButton("Save PNG", () => {
 
 // Save project
 
-makeButton("Save Project", () => {
-    const project = {
-        format: "Fizzpixl",
-        version: "0.3.0",
-        width: WIDTH,
-        height: HEIGHT,
-        image: canvas.toDataURL("image/png")
-    };
-
-    const blob = new Blob(
-        [JSON.stringify(project)],
-        { type: "application/json" }
-    );
-
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-
-    link.href = url;
-    link.download = "artwork.fizzpixl";
-
-    link.click();
-
-    URL.revokeObjectURL(url);
-
-    setStatus("Project saved");
-});
+makeButton("Save Project", saveProject);
 
 // Image loading
 
@@ -613,7 +835,7 @@ fileInput.addEventListener("change", () => {
 const projectInput = document.createElement("input");
 
 projectInput.type = "file";
-projectInput.accept = ".fizzpixl,.json,application/json";
+projectInput.accept = ".fizzpixl,.json,application/json,application/x-fizzpixl";
 projectInput.hidden = true;
 
 editor.appendChild(projectInput);
@@ -622,16 +844,116 @@ makeButton("Load Project", () => {
     projectInput.click();
 });
 
-projectInput.addEventListener("change", () => {
+projectInput.addEventListener("change", async () => {
     const file = projectInput.files[0];
-
     if (!file) return;
 
-    const reader = new FileReader();
+    try {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
 
-    reader.onload = () => {
-        try {
-            const project = JSON.parse(reader.result);
+        const isFZPX =
+            bytes.length >= 4 &&
+            bytes[0] === 0x46 &&
+            bytes[1] === 0x5a &&
+            bytes[2] === 0x50 &&
+            bytes[3] === 0x58;
+
+        if (isFZPX) {
+            const header = FZPX.read(bytes);
+
+            if (
+                header.fileCount < 1 ||
+                header.fileCount > 10000 ||
+                header.metadataOffset < header.headerSize ||
+                header.metadataOffset >= bytes.length
+            ) {
+                throw new Error("Invalid FZPX file table");
+            }
+
+            const metadataBytes = bytes.subarray(header.metadataOffset);
+            const metadata = JSON.parse(
+                new TextDecoder().decode(metadataBytes)
+            );
+
+            if (
+                metadata.format !== "Fizzpixl" ||
+                metadata.version !== "0.4.0" ||
+                metadata.width !== WIDTH ||
+                metadata.height !== HEIGHT ||
+                !Array.isArray(metadata.files) ||
+                metadata.files.length !== header.fileCount
+            ) {
+                throw new Error("Invalid Fizzpixl 0.4.0 project metadata");
+            }
+
+            const loadedFiles = [];
+
+            for (const entry of metadata.files) {
+                if (
+                    typeof entry.name !== "string" ||
+                    !entry.name.trim() ||
+                    entry.type !== "image/png" ||
+                    !Number.isSafeInteger(entry.offset) ||
+                    !Number.isSafeInteger(entry.size) ||
+                    entry.offset < header.headerSize ||
+                    entry.size <= 0 ||
+                    entry.offset + entry.size > header.metadataOffset
+                ) {
+                    throw new Error("Invalid image entry in project");
+                }
+
+                const pngBytes = bytes.slice(
+                    entry.offset,
+                    entry.offset + entry.size
+                );
+
+                const imageBlob = new Blob([pngBytes], {
+                    type: "image/png"
+                });
+
+                const imageUrl = URL.createObjectURL(imageBlob);
+
+                try {
+                    const image = await new Promise((resolve, reject) => {
+                        const loadedImage = new Image();
+                        loadedImage.onload = () => resolve(loadedImage);
+                        loadedImage.onerror = () => reject(
+                            new Error("Could not decode " + entry.name)
+                        );
+                        loadedImage.src = imageUrl;
+                    });
+
+                    const tempCanvas = document.createElement("canvas");
+                    tempCanvas.width = WIDTH;
+                    tempCanvas.height = HEIGHT;
+
+                    const tempCtx = tempCanvas.getContext("2d", {
+                        willReadFrequently: true
+                    });
+
+                    tempCtx.fillStyle = "#000000";
+                    tempCtx.fillRect(0, 0, WIDTH, HEIGHT);
+                    tempCtx.drawImage(image, 0, 0, WIDTH, HEIGHT);
+
+                    loadedFiles.push({
+                        name: entry.name,
+                        imageData: tempCtx.getImageData(
+                            0, 0, WIDTH, HEIGHT
+                        )
+                    });
+                } finally {
+                    URL.revokeObjectURL(imageUrl);
+                }
+            }
+
+            loadProjectFiles(loadedFiles);
+            setStatus("Loaded FZPX project (" + loadedFiles.length + " files)");
+        } else {
+            // Backward compatibility with 0.3.0 JSON projects.
+            const project = JSON.parse(
+                new TextDecoder().decode(bytes)
+            );
 
             if (
                 project.format !== "Fizzpixl" ||
@@ -642,34 +964,39 @@ projectInput.addEventListener("change", () => {
                 throw new Error("Invalid Fizzpixl project");
             }
 
-            const image = new Image();
+            const image = await new Promise((resolve, reject) => {
+                const loadedImage = new Image();
+                loadedImage.onload = () => resolve(loadedImage);
+                loadedImage.onerror = () => reject(
+                    new Error("Invalid project image")
+                );
+                loadedImage.src = project.image;
+            });
 
-            image.onload = () => {
-                pushHistory();
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = WIDTH;
+            tempCanvas.height = HEIGHT;
 
-                ctx.clearRect(0, 0, WIDTH, HEIGHT);
-                ctx.drawImage(image, 0, 0, WIDTH, HEIGHT);
+            const tempCtx = tempCanvas.getContext("2d", {
+                willReadFrequently: true
+            });
 
-                selection = null;
-                clearPreview();
+            tempCtx.fillStyle = "#000000";
+            tempCtx.fillRect(0, 0, WIDTH, HEIGHT);
+            tempCtx.drawImage(image, 0, 0, WIDTH, HEIGHT);
 
-                setStatus("Project loaded");
-            };
+            loadProjectFiles([{
+                name: "artwork.png",
+                imageData: tempCtx.getImageData(0, 0, WIDTH, HEIGHT)
+            }]);
 
-            image.onerror = () => {
-                alert("Invalid project image.");
-            };
-
-            image.src = project.image;
-
-        } catch (error) {
-            alert("Could not load project: " + error.message);
+            setStatus("Loaded legacy 0.3.0 project");
         }
-
+    } catch (error) {
+        alert("Could not load project: " + error.message);
+    } finally {
         projectInput.value = "";
-    };
-
-    reader.readAsText(file);
+    }
 });
 
 // Color palette
@@ -1426,32 +1753,87 @@ function exportPNG() {
     setStatus("PNG exported");
 }
 
-function saveProject() {
-    const project = {
+async function saveProject() {
+    syncActiveProjectFile();
+
+    if (projectFiles.length === 0) {
+        setStatus("No project files to save");
+        return;
+    }
+
+    const imageBlobs = [];
+
+    for (const file of projectFiles) {
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = WIDTH;
+        tempCanvas.height = HEIGHT;
+        tempCanvas.getContext("2d").putImageData(file.imageData, 0, 0);
+
+        const blob = await new Promise(resolve => {
+            tempCanvas.toBlob(resolve, "image/png");
+        });
+
+        if (!blob) {
+            setStatus("Failed to encode " + file.name);
+            return;
+        }
+
+        imageBlobs.push(blob);
+    }
+
+    let offset = FZPX.HEADER_SIZE;
+    const metadataFiles = [];
+
+    for (let i = 0; i < projectFiles.length; i++) {
+        const blob = imageBlobs[i];
+
+        metadataFiles.push({
+            name: projectFiles[i].name,
+            type: "image/png",
+            offset,
+            size: blob.size
+        });
+
+        offset += blob.size;
+    }
+
+    const metadataOffset = offset;
+    const metadata = {
         format: "Fizzpixl",
-        version: "0.3.0",
+        version: "0.4.0",
         width: WIDTH,
         height: HEIGHT,
-        image: canvas.toDataURL("image/png")
+        files: metadataFiles
     };
 
-    const blob = new Blob(
-        [JSON.stringify(project)],
-        { type: "application/json" }
+    const metadataBytes = new TextEncoder().encode(
+        JSON.stringify(metadata)
     );
 
-    const url = URL.createObjectURL(blob);
+    if (metadataOffset + metadataBytes.length > 0xffffffff) {
+        setStatus("Project is too large for FZPX version 1");
+        return;
+    }
 
+    const header = FZPX.write(projectFiles.length, metadataOffset);
+
+    const blob = new Blob([
+        header,
+        ...imageBlobs,
+        metadataBytes
+    ], {
+        type: "application/x-fizzpixl"
+    });
+
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
     link.href = url;
     link.download = "artwork.fizzpixl";
-
     link.click();
 
-    URL.revokeObjectURL(url);
-
-    setStatus("Project saved");
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus("Project saved (" + projectFiles.length + " files)");
 }
 
 // Initial state
@@ -1460,4 +1842,5 @@ selectTool("pencil");
 selectSize(1);
 drawGrid();
 
-setStatus("Fizzpixl 0.3.0 ready");
+createProjectFile("artwork.png");
+setStatus("Fizzpixl 0.4.0 ready");
