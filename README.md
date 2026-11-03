@@ -1,6 +1,6 @@
 # Fizzpixl
 
-Fizzpixl 0.6.0 is a browser-based pixel editor with drawing tools, multiple project images, and a frame-based animation editor. It runs locally without a build step or external dependencies.
+Fizzpixl 0.7.0 is a browser-based pixel editor with drawing tools, multiple project images, a frame-based animation editor, gradients, and reusable stencils. It runs locally without a build step or external dependencies.
 
 ## Run
 
@@ -16,7 +16,11 @@ Choose a tool from the toolbar, then draw on the canvas:
 - **Line**, **Rectangle**, **Filled Rectangle**, **Circle**, and **Filled Circle** draw shapes.
 - **Selection** lets you select, move, copy, cut, and paste rectangular areas.
 
-Use the color swatches or color picker to choose a color. Brush sizes, zoom, and the pixel grid can be adjusted with the controls below the toolbar.
+Use the color swatches, color picker, or **Color** hex field to choose a color. The hex field accepts three- or six-digit values, with or without `#`. Brush sizes, zoom, and the pixel grid can be adjusted with the controls below the toolbar.
+
+### Gradients
+
+Choose the **Gradient** tool, set the start color with the color controls and the end color in **Gradient to**, then drag across the canvas to preview and apply a linear gradient.
 
 ### Keyboard shortcuts
 
@@ -48,12 +52,16 @@ Each project image has its own animation timeline:
 
 The timeline always retains at least one frame. Playback temporarily disables canvas editing and frame controls.
 
+## Stencils
+
+Open **Stencil editor and library** to draw a reusable 32 × 32 stencil. Left-click or drag to add pixels and right-click or drag to erase them. Name and save the stencil; saved stencils persist in this browser. Choose the **Stencil** tool and click the canvas to stamp the selected stencil in the current color. Use **Export Stencil** and **Import Stencil** to transfer stencil JSON files between browsers.
+
 ## Project files and export
 
 - Enter an optional name and select **New File** to add another image to the project. If the name is blank, a unique `untitled` filename is generated. Use the project selector to switch between images.
 - **Save PNG** exports the current canvas frame as a PNG.
 - **Save Project** downloads the project as an `.fizzpixl` file, including its images, animation frames, and playback speeds.
 - **Load Image** imports an image onto the current canvas.
-- **Load Project** opens a saved project. The editor supports current Fizzpixl projects and existing FZPX 0.5.0, 0.4.0, and legacy 0.3.0 projects.
+- **Load Project** opens a saved project. The editor supports Fizzpixl 0.7.0, 0.6.0, 0.5.0, 0.4.0, and legacy 0.3.0 projects.
 
 Undo history is maintained separately for the currently edited frame and is reset when switching frames.

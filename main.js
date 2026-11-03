@@ -28,6 +28,9 @@ Version history:
 
 0.6.0:
     Add onion-skin previews and improve project file creation
+
+0.7.0:
+    Add gradients, hexadecimal color entry, and stencil editing
 */
 
 "use strict";
@@ -101,6 +104,8 @@ const WIDTH = 680;
 const HEIGHT = 480;
 const MAX_HISTORY = 50;
 const DEFAULT_ANIMATION_FPS = 8;
+const STENCIL_SIZE = 32;
+const STENCIL_STORAGE_KEY = "fizzpixl.stencils.v1";
 
 // Editor setup
 
@@ -182,6 +187,44 @@ style.textContent = `
         border-radius: 4px;
         padding: 8px;
         min-width: 160px;
+    }
+
+    #color-controls,
+    #stencil-controls,
+    .color-input {
+        width: 100px;
+        padding: 6px;
+        background: #333;
+        color: white;
+        border: 1px solid #666;
+        border-radius: 4px;
+        font-family: monospace;
+    }
+
+    #stencil-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    #stencil-editor-canvas {
+        width: 256px;
+        height: 256px;
+        max-width: 100%;
+        border: 1px solid #777;
+        background: #171717;
+        image-rendering: pixelated;
+        touch-action: none;
+        cursor: crosshair;
+    }
+
+    #stencil-name,
+    #stencil-select {
+        background: #333;
+        color: white;
+        border: 1px solid #666;
+        border-radius: 4px;
+        padding: 8px;
     }
 
     #canvas-viewport {
@@ -402,6 +445,7 @@ function makeButton(name, callback, parent = toolbar) {
 // Drawing state
 
 let color = "#ffffff";
+let gradientEndColor = "#ffffff";
 let tool = "pencil";
 let brushSize = 1;
 
@@ -734,6 +778,8 @@ addTool("filledRectangle", "Filled Rectangle");
 addTool("circle", "Circle");
 addTool("filledCircle", "Filled Circle");
 addTool("selection", "Selection");
+addTool("gradient", "Gradient");
+addTool("stencil", "Stencil");
 
 selectTool("pencil");
 
@@ -771,6 +817,10 @@ for (const size of [1, 2, 3, 4, 6, 8, 12, 16, 24, 32]) {
         () => selectSize(size),
         sizeContainer
     );
+}
+
+if (tool === "gradient") {
+    drawLinearGradient(startX, startY, pos.x, pos.y, previewCtx);
 }
 
 selectSize(1);
@@ -1272,7 +1322,8 @@ projectInput.addEventListener("change", async () => {
 
             const isAnimationProject =
                 metadata.version === "0.5.0" ||
-                metadata.version === "0.6.0";
+                metadata.version === "0.6.0" ||
+                metadata.version === "0.7.0";
             if (
                 metadata.format !== "Fizzpixl" ||
                 (!isAnimationProject && metadata.version !== "0.4.0") ||
@@ -1484,6 +1535,7 @@ colorPicker.title = "Custom color";
 function selectColor(newColor) {
     color = newColor;
     colorPicker.value = color;
+    hexColorInput.value = color;
 }
 
 for (const paletteColor of colors) {
@@ -1501,10 +1553,422 @@ for (const paletteColor of colors) {
 }
 
 colorPicker.addEventListener("input", () => {
-    color = colorPicker.value;
+    selectColor(colorPicker.value);
 });
 
 palette.appendChild(colorPicker);
+
+// Stencil editor and library
+
+const stencils = [];
+
+const stencilEditor = document.createElement("details");
+stencilEditor.id = "stencil-editor";
+
+const stencilSummary = document.createElement("summary");
+stencilSummary.textContent = "Stencil editor and library";
+stencilEditor.appendChild(stencilSummary);
+
+const stencilControls = document.createElement("div");
+stencilControls.id = "stencil-controls";
+stencilEditor.appendChild(stencilControls);
+
+const stencilSelect = document.createElement("select");
+stencilSelect.id = "stencil-select";
+stencilSelect.setAttribute("aria-label", "Saved stencils");
+stencilControls.appendChild(stencilSelect);
+
+const stencilNameInput = document.createElement("input");
+stencilNameInput.id = "stencil-name";
+stencilNameInput.type = "text";
+stencilNameInput.placeholder = "Stencil name";
+stencilNameInput.setAttribute("aria-label", "Stencil name");
+stencilControls.appendChild(stencilNameInput);
+
+const stencilCanvas = document.createElement("canvas");
+stencilCanvas.id = "stencil-editor-canvas";
+stencilCanvas.width = STENCIL_SIZE;
+stencilCanvas.height = STENCIL_SIZE;
+stencilCanvas.setAttribute("aria-label", "32 by 32 stencil drawing area");
+stencilEditor.appendChild(stencilCanvas);
+const stencilCtx = stencilCanvas.getContext("2d");
+let stencilPixels = new Uint8Array(STENCIL_SIZE * STENCIL_SIZE);
+let drawingStencil = false;
+
+const saveStencilButton = makeButton(
+    "Save Stencil",
+    saveStencil,
+    stencilControls
+);
+const deleteStencilButton = makeButton(
+    "Delete Stencil",
+    deleteSelectedStencil,
+    stencilControls
+);
+const exportStencilButton = makeButton(
+    "Export Stencil",
+    exportSelectedStencil,
+    stencilControls
+);
+const importStencilButton = makeButton(
+    "Import Stencil",
+    () => stencilImportInput.click(),
+    stencilControls
+);
+const stencilImportInput = document.createElement("input");
+stencilImportInput.type = "file";
+stencilImportInput.accept = ".json,application/json";
+stencilImportInput.hidden = true;
+stencilEditor.appendChild(stencilImportInput);
+
+stencilSelect.addEventListener("change", () => {
+    const stencil = getSelectedStencil();
+    stencilPixels = stencil
+        ? Uint8Array.from(stencil.pixels)
+        : new Uint8Array(STENCIL_SIZE * STENCIL_SIZE);
+    stencilNameInput.value = stencil ? stencil.name : "";
+    redrawStencilEditor();
+});
+
+function getSelectedStencil() {
+    return stencils.find(stencil => stencil.id === stencilSelect.value);
+}
+
+function redrawStencilEditor() {
+    stencilCtx.fillStyle = "#171717";
+    stencilCtx.fillRect(0, 0, STENCIL_SIZE, STENCIL_SIZE);
+
+    for (let y = 0; y < STENCIL_SIZE; y++) {
+        for (let x = 0; x < STENCIL_SIZE; x++) {
+            if (stencilPixels[y * STENCIL_SIZE + x]) {
+                stencilCtx.fillStyle = "#5ee7a1";
+                stencilCtx.fillRect(x, y, 1, 1);
+            }
+        }
+    }
+
+    stencilCtx.strokeStyle = "rgba(255,255,255,0.12)";
+    stencilCtx.lineWidth = 0.04;
+    for (let i = 0; i <= STENCIL_SIZE; i++) {
+        stencilCtx.beginPath();
+        stencilCtx.moveTo(i, 0);
+        stencilCtx.lineTo(i, STENCIL_SIZE);
+        stencilCtx.stroke();
+        stencilCtx.beginPath();
+        stencilCtx.moveTo(0, i);
+        stencilCtx.lineTo(STENCIL_SIZE, i);
+        stencilCtx.stroke();
+    }
+}
+
+function updateStencilSelect(selectedId = stencilSelect.value) {
+    stencilSelect.replaceChildren();
+
+    for (const stencil of stencils) {
+        const option = document.createElement("option");
+        option.value = stencil.id;
+        option.textContent = stencil.name;
+        stencilSelect.appendChild(option);
+    }
+
+    if (stencils.some(stencil => stencil.id === selectedId)) {
+        stencilSelect.value = selectedId;
+    }
+
+    const selected = getSelectedStencil();
+    deleteStencilButton.disabled = !selected;
+    exportStencilButton.disabled = !selected;
+    if (selected) {
+        stencilNameInput.value = selected.name;
+        stencilPixels = Uint8Array.from(selected.pixels);
+    } else {
+        stencilNameInput.value = "";
+        stencilPixels = new Uint8Array(STENCIL_SIZE * STENCIL_SIZE);
+    }
+
+    redrawStencilEditor();
+}
+
+function persistStencils() {
+    try {
+        localStorage.setItem(STENCIL_STORAGE_KEY, JSON.stringify(stencils));
+        return true;
+    } catch (error) {
+        console.error("Could not save stencils to browser storage:", error);
+        setStatus("Stencil changed, but could not be saved in browser storage");
+        return false;
+    }
+}
+
+function saveStencil() {
+    const name = stencilNameInput.value.trim();
+    if (!name) {
+        setStatus("Enter a name for the stencil");
+        stencilNameInput.focus();
+        return;
+    }
+
+    if (!stencilPixels.some(pixel => pixel === 1)) {
+        setStatus("Draw at least one pixel in the stencil editor");
+        return;
+    }
+
+    const existing = getSelectedStencil();
+    const stencil = {
+        id: existing ? existing.id : `stencil-${Date.now()}-${Math.random()}`,
+        name,
+        width: STENCIL_SIZE,
+        height: STENCIL_SIZE,
+        pixels: Array.from(stencilPixels)
+    };
+
+    if (existing) {
+        Object.assign(existing, stencil);
+    } else {
+        stencils.push(stencil);
+    }
+
+    updateStencilSelect(stencil.id);
+    if (persistStencils()) setStatus(`Saved stencil "${name}"`);
+}
+
+function deleteSelectedStencil() {
+    const stencil = getSelectedStencil();
+    if (!stencil) return;
+
+    const index = stencils.indexOf(stencil);
+    stencils.splice(index, 1);
+    updateStencilSelect(stencils[Math.max(0, index - 1)]?.id);
+    if (persistStencils()) setStatus(`Deleted stencil "${stencil.name}"`);
+}
+
+function downloadStencil(stencil) {
+    const blob = new Blob([JSON.stringify({
+        format: "FizzpixlStencil",
+        version: 1,
+        name: stencil.name,
+        width: stencil.width,
+        height: stencil.height,
+        pixels: stencil.pixels
+    }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = stencil.name.replace(/[^a-z0-9-_]+/gi, "-") + ".stencil.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportSelectedStencil() {
+    const stencil = getSelectedStencil();
+    if (stencil) downloadStencil(stencil);
+}
+
+function validateStencil(data) {
+    if (
+        !data ||
+        data.format !== "FizzpixlStencil" ||
+        data.version !== 1 ||
+        typeof data.name !== "string" ||
+        !data.name.trim() ||
+        data.width !== STENCIL_SIZE ||
+        data.height !== STENCIL_SIZE ||
+        !Array.isArray(data.pixels) ||
+        data.pixels.length !== STENCIL_SIZE * STENCIL_SIZE ||
+        data.pixels.some(pixel => pixel !== 0 && pixel !== 1)
+    ) {
+        throw new Error("Invalid Fizzpixl stencil file");
+    }
+
+    return {
+        id: `stencil-${Date.now()}-${Math.random()}`,
+        name: data.name.trim(),
+        width: STENCIL_SIZE,
+        height: STENCIL_SIZE,
+        pixels: data.pixels
+    };
+}
+
+stencilImportInput.addEventListener("change", async () => {
+    const file = stencilImportInput.files[0];
+    if (!file) return;
+
+    try {
+        const stencil = validateStencil(JSON.parse(await file.text()));
+        stencils.push(stencil);
+        updateStencilSelect(stencil.id);
+        if (persistStencils()) setStatus(`Imported stencil "${stencil.name}"`);
+    } catch (error) {
+        console.error("Could not import stencil:", error);
+        setStatus("Could not import stencil: " + error.message);
+    } finally {
+        stencilImportInput.value = "";
+    }
+});
+
+function stencilEditorPosition(event) {
+    const rect = stencilCanvas.getBoundingClientRect();
+    return {
+        x: Math.max(0, Math.min(STENCIL_SIZE - 1,
+            Math.floor((event.clientX - rect.left) * STENCIL_SIZE / rect.width))),
+        y: Math.max(0, Math.min(STENCIL_SIZE - 1,
+            Math.floor((event.clientY - rect.top) * STENCIL_SIZE / rect.height)))
+    };
+}
+
+function paintStencilEditor(event) {
+    const { x, y } = stencilEditorPosition(event);
+    stencilPixels[y * STENCIL_SIZE + x] = event.buttons & 2 ? 0 : 1;
+    redrawStencilEditor();
+}
+
+function stampSelectedStencil(x, y) {
+    const stencil = getSelectedStencil();
+    if (!stencil) {
+        setStatus("Create or import a stencil first");
+        return false;
+    }
+
+    pushHistory();
+    const left = x - Math.floor(stencil.width / 2);
+    const top = y - Math.floor(stencil.height / 2);
+
+    for (let sy = 0; sy < stencil.height; sy++) {
+        for (let sx = 0; sx < stencil.width; sx++) {
+            if (stencil.pixels[sy * stencil.width + sx]) {
+                ctx.fillStyle = color;
+                ctx.fillRect(left + sx, top + sy, 1, 1);
+            }
+        }
+    }
+
+    drawOnionSkin();
+    setStatus(`Stamped stencil "${stencil.name}"`);
+    return true;
+}
+
+stencilCanvas.addEventListener("contextmenu", event => event.preventDefault());
+stencilCanvas.addEventListener("pointerdown", event => {
+    event.preventDefault();
+    drawingStencil = true;
+    stencilCanvas.setPointerCapture(event.pointerId);
+    paintStencilEditor(event);
+});
+stencilCanvas.addEventListener("pointermove", event => {
+    if (drawingStencil) paintStencilEditor(event);
+});
+stencilCanvas.addEventListener("pointerup", () => {
+    drawingStencil = false;
+});
+stencilCanvas.addEventListener("pointercancel", () => {
+    drawingStencil = false;
+});
+
+function loadStoredStencils() {
+    try {
+        const saved = localStorage.getItem(STENCIL_STORAGE_KEY);
+        if (saved === null) return;
+
+        const parsed = JSON.parse(saved);
+        if (!Array.isArray(parsed)) {
+            throw new Error("Stencil storage must contain a list");
+        }
+
+        const loadedStencils = [];
+        for (const entry of parsed) {
+            const validated = validateStencil({
+                ...entry,
+                format: "FizzpixlStencil",
+                version: 1
+            });
+            validated.id = typeof entry.id === "string"
+                ? entry.id
+                : validated.id;
+            loadedStencils.push(validated);
+        }
+        stencils.push(...loadedStencils);
+    } catch (error) {
+        console.error("Could not load saved stencils:", error);
+        stencilStorageWarning = "Could not load saved stencils: " + error.message;
+        setStatus(stencilStorageWarning);
+    }
+}
+
+let stencilStorageWarning = null;
+loadStoredStencils();
+updateStencilSelect();
+redrawStencilEditor();
+editor.appendChild(stencilEditor);
+
+const colorControls = document.createElement("div");
+colorControls.id = "color-controls";
+editor.insertBefore(colorControls, viewport);
+
+const hexColorLabel = document.createElement("label");
+hexColorLabel.htmlFor = "hex-color-input";
+hexColorLabel.textContent = "Color:";
+colorControls.appendChild(hexColorLabel);
+
+const hexColorInput = document.createElement("input");
+hexColorInput.id = "hex-color-input";
+hexColorInput.className = "color-input";
+hexColorInput.type = "text";
+hexColorInput.value = color;
+hexColorInput.placeholder = "#RRGGBB";
+hexColorInput.maxLength = 7;
+hexColorInput.setAttribute("aria-label", "Current color in hexadecimal");
+colorControls.appendChild(hexColorInput);
+
+const gradientEndLabel = document.createElement("label");
+gradientEndLabel.htmlFor = "gradient-end-color";
+gradientEndLabel.textContent = "Gradient to:";
+colorControls.appendChild(gradientEndLabel);
+
+const gradientEndInput = document.createElement("input");
+gradientEndInput.id = "gradient-end-color";
+gradientEndInput.className = "color-input";
+gradientEndInput.type = "text";
+gradientEndInput.value = gradientEndColor;
+gradientEndInput.placeholder = "#RRGGBB";
+gradientEndInput.maxLength = 7;
+gradientEndInput.setAttribute("aria-label", "Gradient end color in hexadecimal");
+colorControls.appendChild(gradientEndInput);
+
+function normalizeHexColor(value) {
+    const trimmed = value.trim();
+    const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(trimmed);
+    if (!match) return null;
+
+    const digits = match[1].length === 3
+        ? [...match[1]].map(digit => digit + digit).join("")
+        : match[1];
+
+    return "#" + digits.toLowerCase();
+}
+
+hexColorInput.addEventListener("change", () => {
+    const normalized = normalizeHexColor(hexColorInput.value);
+    if (!normalized) {
+        hexColorInput.value = color;
+        setStatus("Enter a valid hex color, such as #f80 or #ff8800");
+        return;
+    }
+
+    selectColor(normalized);
+    setStatus("Color set to " + normalized);
+});
+
+gradientEndInput.addEventListener("change", () => {
+    const normalized = normalizeHexColor(gradientEndInput.value);
+    if (!normalized) {
+        gradientEndInput.value = gradientEndColor;
+        setStatus("Enter a valid gradient hex color, such as #f80 or #ff8800");
+        return;
+    }
+
+    gradientEndColor = normalized;
+    gradientEndInput.value = normalized;
+});
 
 // Coordinate conversion
 
@@ -1563,6 +2027,18 @@ function drawLine(x0, y0, x1, y1) {
 
         drawPixel(x, y);
     }
+}
+
+function drawLinearGradient(x0, y0, x1, y1, target = ctx) {
+    if (target === previewCtx) {
+        target.clearRect(0, 0, WIDTH, HEIGHT);
+    }
+
+    const gradient = target.createLinearGradient(x0, y0, x1, y1);
+    gradient.addColorStop(0, color);
+    gradient.addColorStop(1, gradientEndColor);
+    target.fillStyle = gradient;
+    target.fillRect(0, 0, WIDTH, HEIGHT);
 }
 
 // Bucket fill
@@ -1915,6 +2391,11 @@ canvas.addEventListener("pointerdown", event => {
         return;
     }
 
+    if (tool === "stencil") {
+        stampSelectedStencil(pos.x, pos.y);
+        return;
+    }
+
     if (tool === "selection") {
         drawing = true;
 
@@ -2031,6 +2512,12 @@ canvas.addEventListener("pointerup", event => {
         clearPreview();
 
         drawShape(startX, startY, pos.x, pos.y);
+    }
+
+    if (tool === "gradient") {
+        clearPreview();
+        drawLinearGradient(startX, startY, pos.x, pos.y);
+        drawOnionSkin();
     }
 
     if (tool === "selection") {
@@ -2280,7 +2767,7 @@ async function saveProject() {
     const metadataOffset = offset;
     const metadata = {
         format: "Fizzpixl",
-        version: "0.6.0",
+        version: "0.7.0",
         width: WIDTH,
         height: HEIGHT,
         files: metadataFiles
@@ -2325,4 +2812,4 @@ selectSize(1);
 drawGrid();
 
 createProjectFile("artwork.png");
-setStatus("Fizzpixl 0.6.0 ready");
+setStatus(stencilStorageWarning || "Fizzpixl 0.7.0 ready");
