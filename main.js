@@ -22,6 +22,9 @@ Version history:
 
 0.4.0:
     Add FZPX project header
+
+0.5.0:
+    Add frame-based animation editing and playback
 */
 
 "use strict";
@@ -94,6 +97,7 @@ const FZPX = {
 const WIDTH = 680;
 const HEIGHT = 480;
 const MAX_HISTORY = 50;
+const DEFAULT_ANIMATION_FPS = 8;
 
 // Editor setup
 
@@ -245,6 +249,52 @@ style.textContent = `
         color: #bbb;
         margin-right: 4px;
     }
+
+    #animation-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    #animation-controls,
+    #animation-timeline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+    }
+
+    #animation-timeline {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding: 2px;
+    }
+
+    .animation-frame {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        min-width: 82px;
+        padding: 6px;
+    }
+
+    .animation-frame canvas {
+        width: 68px;
+        height: 48px;
+        background: #000;
+        image-rendering: pixelated;
+        border: 1px solid #888;
+    }
+
+    #animation-fps {
+        width: 64px;
+        padding: 6px;
+        background: #333;
+        color: white;
+        border: 1px solid #666;
+        border-radius: 4px;
+    }
 `;
 
 document.head.appendChild(style);
@@ -343,6 +393,8 @@ let selectionImage = null;
 
 let undoStack = [];
 let redoStack = [];
+let currentFrameIndex = 0;
+let animationTimer = null;
 
 // Status
 
@@ -377,7 +429,9 @@ function makeProjectFile(name, imageData = null) {
     return {
         id: nextProjectFileId++,
         name,
-        imageData
+        imageData,
+        frames: [imageData],
+        fps: DEFAULT_ANIMATION_FPS
     };
 }
 
@@ -385,7 +439,9 @@ function syncActiveProjectFile() {
     const file = projectFiles.find(item => item.id === activeProjectFile);
 
     if (file) {
-        file.imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+        const imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+        file.frames[currentFrameIndex] = imageData;
+        file.imageData = imageData;
     }
 }
 
@@ -400,6 +456,7 @@ function updateProjectFileList() {
     }
 
     projectFileSelect.value = String(activeProjectFile);
+    updateAnimationTimeline();
 }
 
 function resetEditorHistory() {
@@ -417,10 +474,12 @@ function switchProjectFile(id) {
     const target = projectFiles.find(file => file.id === Number(id));
     if (!target || target.id === activeProjectFile) return;
 
+    stopAnimation();
     syncActiveProjectFile();
     activeProjectFile = target.id;
+    currentFrameIndex = 0;
 
-    ctx.putImageData(target.imageData, 0, 0);
+    ctx.putImageData(target.frames[0], 0, 0);
     resetEditorHistory();
     updateProjectFileList();
     setStatus("Opened " + target.name);
@@ -431,6 +490,7 @@ projectFileSelect.addEventListener("change", () => {
 });
 
 function createProjectFile(name = "untitled.png") {
+    stopAnimation();
     syncActiveProjectFile();
 
     const imageData = ctx.createImageData(WIDTH, HEIGHT);
@@ -444,6 +504,7 @@ function createProjectFile(name = "untitled.png") {
     const file = makeProjectFile(name, imageData);
     projectFiles.push(file);
     activeProjectFile = file.id;
+    currentFrameIndex = 0;
     ctx.putImageData(imageData, 0, 0);
 
     resetEditorHistory();
@@ -494,11 +555,13 @@ makeButton("Delete File", () => {
     const file = projectFiles[index];
     if (!confirm("Delete " + file.name + "?")) return;
 
+    stopAnimation();
     projectFiles.splice(index, 1);
     const next = projectFiles[Math.min(index, projectFiles.length - 1)];
     activeProjectFile = next.id;
 
-    ctx.putImageData(next.imageData, 0, 0);
+    currentFrameIndex = 0;
+    ctx.putImageData(next.frames[0], 0, 0);
 
     resetEditorHistory();
     updateProjectFileList();
@@ -510,14 +573,23 @@ function loadProjectFiles(files) {
         throw new Error("Project contains no image files");
     }
 
+    stopAnimation();
     projectFiles.length = 0;
 
     for (const file of files) {
-        projectFiles.push(makeProjectFile(file.name, file.imageData));
+        const frames = file.frames || [file.imageData];
+        const projectFile = makeProjectFile(
+            file.name,
+            frames[0],
+        );
+        projectFile.frames = frames;
+        projectFile.fps = file.fps || DEFAULT_ANIMATION_FPS;
+        projectFiles.push(projectFile);
     }
 
     activeProjectFile = projectFiles[0].id;
-    ctx.putImageData(projectFiles[0].imageData, 0, 0);
+    currentFrameIndex = 0;
+    ctx.putImageData(projectFiles[0].frames[0], 0, 0);
     resetEditorHistory();
     updateProjectFileList();
 }
@@ -716,6 +788,225 @@ makeButton("Reset Zoom", () => {
 
 updateZoom();
 
+// Animation editor
+
+const animationEditor = document.createElement("section");
+animationEditor.id = "animation-editor";
+
+const animationControls = document.createElement("div");
+animationControls.id = "animation-controls";
+animationEditor.appendChild(animationControls);
+
+const animationTimeline = document.createElement("div");
+animationTimeline.id = "animation-timeline";
+animationTimeline.setAttribute("aria-label", "Animation frames");
+animationEditor.appendChild(animationTimeline);
+editor.appendChild(animationEditor);
+
+const fpsLabel = document.createElement("label");
+fpsLabel.className = "section-label";
+fpsLabel.htmlFor = "animation-fps";
+fpsLabel.textContent = "FPS:";
+animationControls.appendChild(fpsLabel);
+
+const fpsInput = document.createElement("input");
+fpsInput.id = "animation-fps";
+fpsInput.type = "number";
+fpsInput.min = "1";
+fpsInput.max = "60";
+fpsInput.value = String(DEFAULT_ANIMATION_FPS);
+fpsInput.title = "Animation playback speed";
+animationControls.appendChild(fpsInput);
+
+const blankFrameButton = makeButton(
+    "Blank Frame",
+    () => addAnimationFrame(false),
+    animationControls
+);
+const duplicateFrameButton = makeButton(
+    "Duplicate Frame",
+    () => addAnimationFrame(true),
+    animationControls
+);
+const deleteFrameButton = makeButton(
+    "Delete Frame",
+    deleteAnimationFrame,
+    animationControls
+);
+const playAnimationButton = makeButton(
+    "Play",
+    toggleAnimationPlayback,
+    animationControls
+);
+
+function getActiveProjectFile() {
+    return projectFiles.find(file => file.id === activeProjectFile);
+}
+
+function getAnimationFPS(file = getActiveProjectFile()) {
+    return file ? file.fps : DEFAULT_ANIMATION_FPS;
+}
+
+function updateAnimationTimeline() {
+    const file = getActiveProjectFile();
+    animationTimeline.replaceChildren();
+
+    if (!file) return;
+
+    fpsInput.value = String(file.fps);
+
+    file.frames.forEach((frame, index) => {
+        const button = document.createElement("button");
+        button.className = "animation-frame";
+        button.classList.toggle("active", index === currentFrameIndex);
+        button.disabled = animationTimer !== null;
+        button.title = `Go to frame ${index + 1}`;
+        button.setAttribute("aria-label", `Frame ${index + 1}`);
+
+        const thumbnail = document.createElement("canvas");
+        thumbnail.width = 68;
+        thumbnail.height = 48;
+        const thumbnailCtx = thumbnail.getContext("2d");
+        thumbnailCtx.imageSmoothingEnabled = false;
+        animationThumbnailCtx.putImageData(frame, 0, 0);
+        thumbnailCtx.drawImage(animationThumbnailSource, 0, 0, 68, 48);
+
+        const label = document.createElement("span");
+        label.textContent = String(index + 1);
+        button.append(thumbnail, label);
+        button.addEventListener("click", () => selectAnimationFrame(index));
+        animationTimeline.appendChild(button);
+    });
+
+    const isPlaying = animationTimer !== null;
+    blankFrameButton.disabled = isPlaying;
+    duplicateFrameButton.disabled = isPlaying;
+    deleteFrameButton.disabled = isPlaying || file.frames.length <= 1;
+    fpsInput.disabled = isPlaying;
+    playAnimationButton.textContent = isPlaying ? "Stop" : "Play";
+    canvas.style.pointerEvents = isPlaying ? "none" : "";
+}
+
+function selectAnimationFrame(index) {
+    const file = getActiveProjectFile();
+    if (!file || index < 0 || index >= file.frames.length) return;
+
+    syncActiveProjectFile();
+    currentFrameIndex = index;
+    ctx.putImageData(file.frames[currentFrameIndex], 0, 0);
+    resetEditorHistory();
+    updateAnimationTimeline();
+    setStatus(`Frame ${currentFrameIndex + 1} of ${file.frames.length}`);
+}
+
+function addAnimationFrame(duplicate) {
+    const file = getActiveProjectFile();
+    if (!file) return;
+    if (file.frames.length >= 10000) {
+        setStatus("An animation cannot exceed 10000 frames");
+        return;
+    }
+
+    syncActiveProjectFile();
+    const source = file.frames[currentFrameIndex];
+    const frame = ctx.createImageData(WIDTH, HEIGHT);
+
+    if (duplicate) {
+        frame.data.set(source.data);
+    } else {
+        for (let i = 0; i < frame.data.length; i += 4) {
+            frame.data[i] = 0;
+            frame.data[i + 1] = 0;
+            frame.data[i + 2] = 0;
+            frame.data[i + 3] = 255;
+        }
+    }
+
+    file.frames.splice(currentFrameIndex + 1, 0, frame);
+    currentFrameIndex++;
+    ctx.putImageData(frame, 0, 0);
+    resetEditorHistory();
+    updateAnimationTimeline();
+    setStatus(duplicate ? "Frame duplicated" : "Blank frame added");
+}
+
+function deleteAnimationFrame() {
+    const file = getActiveProjectFile();
+    if (!file || file.frames.length <= 1) return;
+
+    stopAnimation();
+    file.frames.splice(currentFrameIndex, 1);
+    currentFrameIndex = Math.min(currentFrameIndex, file.frames.length - 1);
+    ctx.putImageData(file.frames[currentFrameIndex], 0, 0);
+    resetEditorHistory();
+    updateAnimationTimeline();
+    setStatus("Frame deleted");
+}
+
+function stopAnimation() {
+    if (animationTimer !== null) {
+        clearInterval(animationTimer);
+        animationTimer = null;
+    }
+
+    updateAnimationTimeline();
+}
+
+function toggleAnimationPlayback() {
+    if (animationTimer !== null) {
+        stopAnimation();
+        setStatus("Animation stopped");
+        return;
+    }
+
+    const file = getActiveProjectFile();
+    if (!file) return;
+
+    syncActiveProjectFile();
+    animationTimer = setInterval(() => {
+        const activeFile = getActiveProjectFile();
+        if (!activeFile) {
+            stopAnimation();
+            return;
+        }
+
+        syncActiveProjectFile();
+        currentFrameIndex = (currentFrameIndex + 1) % activeFile.frames.length;
+        ctx.putImageData(activeFile.frames[currentFrameIndex], 0, 0);
+        resetEditorHistory();
+        updateSelectedAnimationFrame();
+    }, 1000 / getAnimationFPS(file));
+
+    updateAnimationTimeline();
+    setStatus("Playing animation");
+}
+
+fpsInput.addEventListener("change", () => {
+    const file = getActiveProjectFile();
+    if (!file) return;
+
+    const fps = Number(fpsInput.value);
+    if (!Number.isInteger(fps) || fps < 1 || fps > 60) {
+        fpsInput.value = String(file.fps);
+        setStatus("FPS must be between 1 and 60");
+        return;
+    }
+
+    file.fps = fps;
+    setStatus(`Playback speed set to ${fps} FPS`);
+});
+
+const animationThumbnailSource = document.createElement("canvas");
+animationThumbnailSource.width = WIDTH;
+animationThumbnailSource.height = HEIGHT;
+const animationThumbnailCtx = animationThumbnailSource.getContext("2d");
+
+function updateSelectedAnimationFrame() {
+    for (const [index, button] of animationTimeline.children.entries()) {
+        button.classList.toggle("active", index === currentFrameIndex);
+    }
+}
+
 // Grid
 
 function drawGrid() {
@@ -750,6 +1041,7 @@ makeButton("Toggle Grid", () => {
 // Clear canvas
 
 makeButton("Clear", () => {
+    stopAnimation();
     if (!confirm("Clear the entire canvas?")) return;
 
     pushHistory();
@@ -799,6 +1091,7 @@ fileInput.addEventListener("change", () => {
 
     if (!file) return;
 
+    stopAnimation();
     const image = new Image();
     const url = URL.createObjectURL(file);
 
@@ -876,79 +1169,129 @@ projectInput.addEventListener("change", async () => {
                 new TextDecoder().decode(metadataBytes)
             );
 
+            const isAnimationProject = metadata.version === "0.5.0";
             if (
                 metadata.format !== "Fizzpixl" ||
-                metadata.version !== "0.4.0" ||
+                (!isAnimationProject && metadata.version !== "0.4.0") ||
                 metadata.width !== WIDTH ||
                 metadata.height !== HEIGHT ||
-                !Array.isArray(metadata.files) ||
-                metadata.files.length !== header.fileCount
+                !Array.isArray(metadata.files)
             ) {
-                throw new Error("Invalid Fizzpixl 0.4.0 project metadata");
+                throw new Error("Invalid Fizzpixl project metadata");
             }
 
-            const loadedFiles = [];
-
-            for (const entry of metadata.files) {
+            const entries = [];
+            for (const fileEntry of metadata.files) {
                 if (
-                    typeof entry.name !== "string" ||
-                    !entry.name.trim() ||
-                    entry.type !== "image/png" ||
-                    !Number.isSafeInteger(entry.offset) ||
-                    !Number.isSafeInteger(entry.size) ||
-                    entry.offset < header.headerSize ||
-                    entry.size <= 0 ||
-                    entry.offset + entry.size > header.metadataOffset
+                    typeof fileEntry.name !== "string" ||
+                    !fileEntry.name.trim()
                 ) {
                     throw new Error("Invalid image entry in project");
                 }
 
-                const pngBytes = bytes.slice(
-                    entry.offset,
-                    entry.offset + entry.size
-                );
+                const frames = isAnimationProject
+                    ? fileEntry.frames
+                    : [fileEntry];
 
-                const imageBlob = new Blob([pngBytes], {
-                    type: "image/png"
-                });
-
-                const imageUrl = URL.createObjectURL(imageBlob);
-
-                try {
-                    const image = await new Promise((resolve, reject) => {
-                        const loadedImage = new Image();
-                        loadedImage.onload = () => resolve(loadedImage);
-                        loadedImage.onerror = () => reject(
-                            new Error("Could not decode " + entry.name)
-                        );
-                        loadedImage.src = imageUrl;
-                    });
-
-                    const tempCanvas = document.createElement("canvas");
-                    tempCanvas.width = WIDTH;
-                    tempCanvas.height = HEIGHT;
-
-                    const tempCtx = tempCanvas.getContext("2d", {
-                        willReadFrequently: true
-                    });
-
-                    tempCtx.fillStyle = "#000000";
-                    tempCtx.fillRect(0, 0, WIDTH, HEIGHT);
-                    tempCtx.drawImage(image, 0, 0, WIDTH, HEIGHT);
-
-                    loadedFiles.push({
-                        name: entry.name,
-                        imageData: tempCtx.getImageData(
-                            0, 0, WIDTH, HEIGHT
-                        )
-                    });
-                } finally {
-                    URL.revokeObjectURL(imageUrl);
+                if (
+                    !Array.isArray(frames) ||
+                    frames.length === 0 ||
+                    (isAnimationProject && (
+                        !Number.isInteger(fileEntry.fps) ||
+                        fileEntry.fps < 1 ||
+                        fileEntry.fps > 60
+                    ))
+                ) {
+                    throw new Error("Invalid animation frames in project");
                 }
+
+                entries.push({
+                    name: fileEntry.name,
+                    fps: isAnimationProject
+                        ? fileEntry.fps
+                        : DEFAULT_ANIMATION_FPS,
+                    frames
+                });
+            }
+
+            const imageCount = entries.reduce(
+                (total, fileEntry) => total + fileEntry.frames.length,
+                0
+            );
+            if (imageCount !== header.fileCount || imageCount > 10000) {
+                throw new Error("Invalid FZPX image count");
+            }
+
+            const loadedFiles = [];
+
+            for (const fileEntry of entries) {
+                const loadedFrames = [];
+
+                for (const entry of fileEntry.frames) {
+                    if (
+                        entry.type !== "image/png" ||
+                        !Number.isSafeInteger(entry.offset) ||
+                        !Number.isSafeInteger(entry.size) ||
+                        entry.offset < header.headerSize ||
+                        entry.size <= 0 ||
+                        entry.offset + entry.size > header.metadataOffset
+                    ) {
+                        throw new Error("Invalid image entry in project");
+                    }
+
+                    const pngBytes = bytes.slice(
+                        entry.offset,
+                        entry.offset + entry.size
+                    );
+
+                    const imageBlob = new Blob([pngBytes], {
+                        type: "image/png"
+                    });
+
+                    const imageUrl = URL.createObjectURL(imageBlob);
+
+                    try {
+                        const image = await new Promise((resolve, reject) => {
+                            const loadedImage = new Image();
+                            loadedImage.onload = () => resolve(loadedImage);
+                            loadedImage.onerror = () => reject(
+                                new Error(
+                                    "Could not decode " + fileEntry.name
+                                )
+                            );
+                            loadedImage.src = imageUrl;
+                        });
+
+                        const tempCanvas = document.createElement("canvas");
+                        tempCanvas.width = WIDTH;
+                        tempCanvas.height = HEIGHT;
+
+                        const tempCtx = tempCanvas.getContext("2d", {
+                            willReadFrequently: true
+                        });
+
+                        tempCtx.fillStyle = "#000000";
+                        tempCtx.fillRect(0, 0, WIDTH, HEIGHT);
+                        tempCtx.drawImage(image, 0, 0, WIDTH, HEIGHT);
+                        loadedFrames.push(
+                            tempCtx.getImageData(0, 0, WIDTH, HEIGHT)
+                        );
+                    } finally {
+                        URL.revokeObjectURL(imageUrl);
+                    }
+                }
+
+                loadedFiles.push({
+                    name: fileEntry.name,
+                    fps: fileEntry.fps,
+                    frames: loadedFrames
+                });
             }
 
             loadProjectFiles(loadedFiles);
-            setStatus("Loaded FZPX project (" + loadedFiles.length + " files)");
+            setStatus(
+                `Loaded FZPX project (${loadedFiles.length} files, ${imageCount} frames)`
+            );
         } else {
             // Backward compatibility with 0.3.0 JSON projects.
             const project = JSON.parse(
@@ -1445,6 +1788,7 @@ function pickColor(x, y) {
 // Pointer events
 
 canvas.addEventListener("pointerdown", event => {
+    if (animationTimer !== null) return;
     if (event.button !== 0) return;
 
     const pos = getPixelPosition(event);
@@ -1502,6 +1846,7 @@ canvas.addEventListener("pointerdown", event => {
 });
 
 canvas.addEventListener("pointermove", event => {
+    if (animationTimer !== null) return;
     const pos = getPixelPosition(event);
 
     if (!drawing) return;
@@ -1566,6 +1911,7 @@ canvas.addEventListener("pointermove", event => {
 });
 
 canvas.addEventListener("pointerup", event => {
+    if (animationTimer !== null) return;
     if (!drawing) return;
 
     const pos = getPixelPosition(event);
@@ -1641,6 +1987,11 @@ canvas.addEventListener("pointercancel", () => {
 // Keyboard shortcuts
 
 document.addEventListener("keydown", event => {
+    if (animationTimer !== null) {
+        if (event.key === "Escape") stopAnimation();
+        return;
+    }
+
     if (event.target.matches("input, textarea, select")) {
         return;
     }
@@ -1754,6 +2105,7 @@ function exportPNG() {
 }
 
 async function saveProject() {
+    stopAnimation();
     syncActiveProjectFile();
 
     if (projectFiles.length === 0) {
@@ -1761,46 +2113,66 @@ async function saveProject() {
         return;
     }
 
+    const totalFrames = projectFiles.reduce(
+        (total, file) => total + file.frames.length,
+        0
+    );
+    if (totalFrames > 10000) {
+        setStatus("A project cannot contain more than 10000 frames");
+        return;
+    }
+
     const imageBlobs = [];
+    const metadataFiles = [];
 
     for (const file of projectFiles) {
-        const tempCanvas = document.createElement("canvas");
-        tempCanvas.width = WIDTH;
-        tempCanvas.height = HEIGHT;
-        tempCanvas.getContext("2d").putImageData(file.imageData, 0, 0);
+        const metadataFrames = [];
 
-        const blob = await new Promise(resolve => {
-            tempCanvas.toBlob(resolve, "image/png");
-        });
+        for (const frame of file.frames) {
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = WIDTH;
+            tempCanvas.height = HEIGHT;
+            tempCanvas.getContext("2d").putImageData(frame, 0, 0);
 
-        if (!blob) {
-            setStatus("Failed to encode " + file.name);
-            return;
+            const blob = await new Promise(resolve => {
+                tempCanvas.toBlob(resolve, "image/png");
+            });
+
+            if (!blob) {
+                setStatus("Failed to encode " + file.name);
+                return;
+            }
+
+            imageBlobs.push(blob);
+            metadataFrames.push(blob);
         }
 
-        imageBlobs.push(blob);
+        metadataFiles.push({
+            name: file.name,
+            fps: file.fps,
+            frames: metadataFrames
+        });
     }
 
     let offset = FZPX.HEADER_SIZE;
-    const metadataFiles = [];
-
-    for (let i = 0; i < projectFiles.length; i++) {
-        const blob = imageBlobs[i];
-
-        metadataFiles.push({
-            name: projectFiles[i].name,
-            type: "image/png",
-            offset,
-            size: blob.size
+    let imageIndex = 0;
+    for (const file of metadataFiles) {
+        file.frames = file.frames.map(blob => {
+            const entry = {
+                type: "image/png",
+                offset,
+                size: blob.size
+            };
+            offset += blob.size;
+            imageIndex++;
+            return entry;
         });
-
-        offset += blob.size;
     }
 
     const metadataOffset = offset;
     const metadata = {
         format: "Fizzpixl",
-        version: "0.4.0",
+        version: "0.5.0",
         width: WIDTH,
         height: HEIGHT,
         files: metadataFiles
@@ -1815,7 +2187,7 @@ async function saveProject() {
         return;
     }
 
-    const header = FZPX.write(projectFiles.length, metadataOffset);
+    const header = FZPX.write(imageIndex, metadataOffset);
 
     const blob = new Blob([
         header,
@@ -1833,7 +2205,9 @@ async function saveProject() {
     link.click();
 
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus("Project saved (" + projectFiles.length + " files)");
+    setStatus(
+        `Project saved (${projectFiles.length} files, ${imageIndex} frames)`
+    );
 }
 
 // Initial state
@@ -1843,4 +2217,4 @@ selectSize(1);
 drawGrid();
 
 createProjectFile("artwork.png");
-setStatus("Fizzpixl 0.4.0 ready");
+setStatus("Fizzpixl 0.5.0 ready");
