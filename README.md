@@ -1,6 +1,6 @@
 # Fizzpixl
 
-Fizzpixl 0.7.0 is a browser-based pixel editor with drawing tools, multiple project images, a frame-based animation editor, gradients, and reusable stencils. It runs locally without a build step or external dependencies.
+Fizzpixl 0.8.0 is a browser-based pixel editor with drawing tools, multiple project images, a frame-based animation editor, gradients, and reusable stencils. It runs locally without a build step or external dependencies.
 
 ## Run
 
@@ -54,7 +54,7 @@ The timeline always retains at least one frame. Playback temporarily disables ca
 
 ## Stencils
 
-Open **Stencil editor and library** to draw a reusable 32 × 32 stencil. Left-click or drag to add pixels and right-click or drag to erase them. Name and save the stencil; saved stencils persist in this browser. Choose the **Stencil** tool and click the canvas to stamp the selected stencil in the current color. Use **Export Stencil** and **Import Stencil** to transfer stencil JSON files between browsers.
+Open **Stencil editor and library** to draw reusable 32 × 32 stencils. Select **New Stencil** before drawing a new one; choose a saved stencil to edit it. Left-click or drag to add pixels and right-click or drag to erase them. Name and save each stencil; the library persists in this browser. Choose a stencil in the list, select the **Stencil** tool, then click the canvas to stamp it in the current color. Use **Export Stencil** and **Import Stencil** to transfer stencil JSON files between browsers.
 
 ## Project files and export
 
@@ -62,6 +62,6 @@ Open **Stencil editor and library** to draw a reusable 32 × 32 stencil. Left-cl
 - **Save PNG** exports the current canvas frame as a PNG.
 - **Save Project** downloads the project as an `.fizzpixl` file, including its images, animation frames, and playback speeds.
 - **Load Image** imports an image onto the current canvas.
-- **Load Project** opens a saved project. The editor supports Fizzpixl 0.7.0, 0.6.0, 0.5.0, 0.4.0, and legacy 0.3.0 projects.
+- **Load Project** opens a saved project. The editor supports Fizzpixl 0.8.0, 0.7.0, 0.6.0, 0.5.0, 0.4.0, and legacy 0.3.0 projects.
 
 Undo history is maintained separately for the currently edited frame and is reset when switching frames.

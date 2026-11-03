@@ -31,6 +31,9 @@ Version history:
 
 0.7.0:
     Add gradients, hexadecimal color entry, and stencil editing
+
+0.8.0:
+    Support creating and managing multiple stencils
 */
 
 "use strict";
@@ -1323,7 +1326,8 @@ projectInput.addEventListener("change", async () => {
             const isAnimationProject =
                 metadata.version === "0.5.0" ||
                 metadata.version === "0.6.0" ||
-                metadata.version === "0.7.0";
+                metadata.version === "0.7.0" ||
+                metadata.version === "0.8.0";
             if (
                 metadata.format !== "Fizzpixl" ||
                 (!isAnimationProject && metadata.version !== "0.4.0") ||
@@ -1577,6 +1581,7 @@ const stencilSelect = document.createElement("select");
 stencilSelect.id = "stencil-select";
 stencilSelect.setAttribute("aria-label", "Saved stencils");
 stencilControls.appendChild(stencilSelect);
+let stencilEditingId = null;
 
 const stencilNameInput = document.createElement("input");
 stencilNameInput.id = "stencil-name";
@@ -1600,6 +1605,7 @@ const saveStencilButton = makeButton(
     saveStencil,
     stencilControls
 );
+makeButton("New Stencil", newStencil, stencilControls);
 const deleteStencilButton = makeButton(
     "Delete Stencil",
     deleteSelectedStencil,
@@ -1623,6 +1629,7 @@ stencilEditor.appendChild(stencilImportInput);
 
 stencilSelect.addEventListener("change", () => {
     const stencil = getSelectedStencil();
+    stencilEditingId = stencil ? stencil.id : null;
     stencilPixels = stencil
         ? Uint8Array.from(stencil.pixels)
         : new Uint8Array(STENCIL_SIZE * STENCIL_SIZE);
@@ -1664,6 +1671,13 @@ function redrawStencilEditor() {
 function updateStencilSelect(selectedId = stencilSelect.value) {
     stencilSelect.replaceChildren();
 
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = stencils.length
+        ? "Choose stencil..."
+        : "No saved stencils";
+    stencilSelect.appendChild(placeholder);
+
     for (const stencil of stencils) {
         const option = document.createElement("option");
         option.value = stencil.id;
@@ -1676,6 +1690,7 @@ function updateStencilSelect(selectedId = stencilSelect.value) {
     }
 
     const selected = getSelectedStencil();
+    stencilEditingId = selected ? selected.id : null;
     deleteStencilButton.disabled = !selected;
     exportStencilButton.disabled = !selected;
     if (selected) {
@@ -1713,7 +1728,7 @@ function saveStencil() {
         return;
     }
 
-    const existing = getSelectedStencil();
+    const existing = stencils.find(stencil => stencil.id === stencilEditingId);
     const stencil = {
         id: existing ? existing.id : `stencil-${Date.now()}-${Math.random()}`,
         name,
@@ -1732,8 +1747,17 @@ function saveStencil() {
     if (persistStencils()) setStatus(`Saved stencil "${name}"`);
 }
 
+function newStencil() {
+    stencilEditingId = null;
+    stencilSelect.value = "";
+    stencilNameInput.value = "";
+    stencilPixels = new Uint8Array(STENCIL_SIZE * STENCIL_SIZE);
+    redrawStencilEditor();
+    setStatus("Drawing a new stencil");
+}
+
 function deleteSelectedStencil() {
-    const stencil = getSelectedStencil();
+    const stencil = stencils.find(item => item.id === stencilEditingId);
     if (!stencil) return;
 
     const index = stencils.indexOf(stencil);
@@ -2767,7 +2791,7 @@ async function saveProject() {
     const metadataOffset = offset;
     const metadata = {
         format: "Fizzpixl",
-        version: "0.7.0",
+        version: "0.8.0",
         width: WIDTH,
         height: HEIGHT,
         files: metadataFiles
@@ -2812,4 +2836,4 @@ selectSize(1);
 drawGrid();
 
 createProjectFile("artwork.png");
-setStatus(stencilStorageWarning || "Fizzpixl 0.7.0 ready");
+setStatus(stencilStorageWarning || "Fizzpixl 0.8.0 ready");
