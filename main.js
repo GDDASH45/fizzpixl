@@ -25,6 +25,9 @@ Version history:
 
 0.5.0:
     Add frame-based animation editing and playback
+
+0.6.0:
+    Add onion-skin previews and improve project file creation
 */
 
 "use strict";
@@ -172,6 +175,15 @@ style.textContent = `
         min-width: 180px;
     }
 
+    #new-project-file-name {
+        background: #333;
+        color: white;
+        border: 1px solid #666;
+        border-radius: 4px;
+        padding: 8px;
+        min-width: 160px;
+    }
+
     #canvas-viewport {
         width: 100%;
         max-width: 100%;
@@ -188,6 +200,7 @@ style.textContent = `
 
     #pixel-canvas,
     #grid-canvas,
+    #onion-canvas,
     #preview-canvas {
         position: absolute;
         top: 0;
@@ -205,12 +218,17 @@ style.textContent = `
     }
 
     #grid-canvas,
+    #onion-canvas,
     #preview-canvas {
         pointer-events: none;
         image-rendering: pixelated;
     }
 
     #preview-canvas {
+        z-index: 4;
+    }
+
+    #onion-canvas {
         z-index: 3;
     }
 
@@ -335,6 +353,16 @@ gridCanvas.height = HEIGHT;
 
 const gridCtx = gridCanvas.getContext("2d");
 
+// Onion-skin overlay
+
+const onionCanvas = document.createElement("canvas");
+
+onionCanvas.id = "onion-canvas";
+onionCanvas.width = WIDTH;
+onionCanvas.height = HEIGHT;
+
+const onionCtx = onionCanvas.getContext("2d");
+
 // Preview overlay
 
 const previewCanvas = document.createElement("canvas");
@@ -347,6 +375,7 @@ const previewCtx = previewCanvas.getContext("2d");
 
 canvasWrapper.appendChild(canvas);
 canvasWrapper.appendChild(gridCanvas);
+canvasWrapper.appendChild(onionCanvas);
 canvasWrapper.appendChild(previewCanvas);
 
 editor.appendChild(viewport);
@@ -512,18 +541,34 @@ function createProjectFile(name = "untitled.png") {
     setStatus("Created " + file.name);
 }
 
-makeButton("New File", () => {
-    const name = prompt("New image filename:", "untitled.png");
-    if (name === null) return;
+const newProjectFileName = document.createElement("input");
+newProjectFileName.id = "new-project-file-name";
+newProjectFileName.type = "text";
+newProjectFileName.placeholder = "New image name (optional)";
+newProjectFileName.setAttribute("aria-label", "New image filename");
+projectFileBar.appendChild(newProjectFileName);
 
-    const cleanName = name.trim();
-    if (!cleanName) {
-        alert("A filename is required.");
-        return;
+function createNamedProjectFile() {
+    let name = newProjectFileName.value.trim();
+
+    if (!name) {
+        let suffix = 1;
+        name = "untitled.png";
+
+        while (projectFiles.some(file => file.name === name)) {
+            suffix++;
+            name = `untitled-${suffix}.png`;
+        }
     }
 
-    createProjectFile(cleanName);
-}, projectFileBar);
+    createProjectFile(name);
+    newProjectFileName.value = "";
+}
+
+makeButton("New File", createNamedProjectFile, projectFileBar);
+newProjectFileName.addEventListener("keydown", event => {
+    if (event.key === "Enter") createNamedProjectFile();
+});
 
 makeButton("Rename File", () => {
     const file = projectFiles.find(item => item.id === activeProjectFile);
@@ -627,6 +672,7 @@ function undo() {
     ctx.putImageData(previous, 0, 0);
 
     updateHistoryButtons();
+    drawOnionSkin();
     setStatus("Undo");
 }
 
@@ -642,6 +688,7 @@ function redo() {
     ctx.putImageData(next, 0, 0);
 
     updateHistoryButtons();
+    drawOnionSkin();
     setStatus("Redo");
 }
 
@@ -759,6 +806,7 @@ function updateZoom() {
     for (const element of [
         canvas,
         gridCanvas,
+        onionCanvas,
         previewCanvas
     ]) {
         element.style.width = width + "px";
@@ -839,6 +887,14 @@ const playAnimationButton = makeButton(
     animationControls
 );
 
+const onionSkinLabel = document.createElement("label");
+const onionSkinToggle = document.createElement("input");
+onionSkinToggle.type = "checkbox";
+onionSkinToggle.checked = true;
+onionSkinToggle.addEventListener("change", drawOnionSkin);
+onionSkinLabel.append(onionSkinToggle, " Onion skin");
+animationControls.appendChild(onionSkinLabel);
+
 function getActiveProjectFile() {
     return projectFiles.find(file => file.id === activeProjectFile);
 }
@@ -851,7 +907,10 @@ function updateAnimationTimeline() {
     const file = getActiveProjectFile();
     animationTimeline.replaceChildren();
 
-    if (!file) return;
+    if (!file) {
+        drawOnionSkin();
+        return;
+    }
 
     fpsInput.value = String(file.fps);
 
@@ -883,8 +942,48 @@ function updateAnimationTimeline() {
     duplicateFrameButton.disabled = isPlaying;
     deleteFrameButton.disabled = isPlaying || file.frames.length <= 1;
     fpsInput.disabled = isPlaying;
+    onionSkinToggle.disabled = isPlaying;
     playAnimationButton.textContent = isPlaying ? "Stop" : "Play";
     canvas.style.pointerEvents = isPlaying ? "none" : "";
+    drawOnionSkin();
+}
+
+function drawOnionSkin() {
+    onionCtx.clearRect(0, 0, WIDTH, HEIGHT);
+
+    const file = getActiveProjectFile();
+    if (!onionSkinToggle.checked || animationTimer !== null || !file) return;
+
+    const currentPixels = ctx.getImageData(0, 0, WIDTH, HEIGHT).data;
+    const neighbors = [
+        { frame: file.frames[currentFrameIndex - 1], color: [255, 64, 64] },
+        { frame: file.frames[currentFrameIndex + 1], color: [64, 200, 255] }
+    ];
+
+    for (const neighbor of neighbors) {
+        if (!neighbor.frame) continue;
+
+        const ghost = onionCtx.createImageData(WIDTH, HEIGHT);
+        const source = neighbor.frame.data;
+
+        for (let i = 0; i < source.length; i += 4) {
+            if (
+                source[i] === currentPixels[i] &&
+                source[i + 1] === currentPixels[i + 1] &&
+                source[i + 2] === currentPixels[i + 2] &&
+                source[i + 3] === currentPixels[i + 3]
+            ) {
+                continue;
+            }
+
+            ghost.data[i] = neighbor.color[0];
+            ghost.data[i + 1] = neighbor.color[1];
+            ghost.data[i + 2] = neighbor.color[2];
+            ghost.data[i + 3] = Math.round(source[i + 3] * 0.45);
+        }
+
+        onionCtx.putImageData(ghost, 0, 0);
+    }
 }
 
 function selectAnimationFrame(index) {
@@ -1041,9 +1140,9 @@ makeButton("Toggle Grid", () => {
 // Clear canvas
 
 makeButton("Clear", () => {
-    stopAnimation();
     if (!confirm("Clear the entire canvas?")) return;
 
+    stopAnimation();
     pushHistory();
 
     ctx.fillStyle = "#000000";
@@ -1051,6 +1150,7 @@ makeButton("Clear", () => {
 
     selection = null;
     clearPreview();
+    drawOnionSkin();
 
     setStatus("Canvas cleared");
 });
@@ -1105,6 +1205,7 @@ fileInput.addEventListener("change", () => {
 
         selection = null;
         clearPreview();
+        drawOnionSkin();
 
         URL.revokeObjectURL(url);
 
@@ -1169,7 +1270,9 @@ projectInput.addEventListener("change", async () => {
                 new TextDecoder().decode(metadataBytes)
             );
 
-            const isAnimationProject = metadata.version === "0.5.0";
+            const isAnimationProject =
+                metadata.version === "0.5.0" ||
+                metadata.version === "0.6.0";
             if (
                 metadata.format !== "Fizzpixl" ||
                 (!isAnimationProject && metadata.version !== "0.4.0") ||
@@ -1348,7 +1451,7 @@ const palette = document.createElement("div");
 
 palette.id = "palette";
 
-editor.appendChild(palette);
+editor.insertBefore(palette, viewport);
 
 const colors = [
     "#000000",
@@ -1542,6 +1645,7 @@ function floodFill(startX, startY) {
 
     ctx.putImageData(imageData, 0, 0);
 
+    drawOnionSkin();
     setStatus("Area filled");
 }
 
@@ -1737,6 +1841,7 @@ function copySelection(cut = false) {
             selection.h
         );
 
+        drawOnionSkin();
         setStatus("Selection cut");
     } else {
         setStatus("Selection copied");
@@ -1766,6 +1871,7 @@ function pasteSelection() {
     };
 
     drawSelectionPreview();
+    drawOnionSkin();
 
     setStatus("Selection pasted");
 }
@@ -1976,12 +2082,14 @@ canvas.addEventListener("pointerup", event => {
     }
 
     drawing = false;
+    drawOnionSkin();
 });
 
 canvas.addEventListener("pointercancel", () => {
     drawing = false;
     movingSelection = false;
     clearPreview();
+    drawOnionSkin();
 });
 
 // Keyboard shortcuts
@@ -2172,7 +2280,7 @@ async function saveProject() {
     const metadataOffset = offset;
     const metadata = {
         format: "Fizzpixl",
-        version: "0.5.0",
+        version: "0.6.0",
         width: WIDTH,
         height: HEIGHT,
         files: metadataFiles
@@ -2217,4 +2325,4 @@ selectSize(1);
 drawGrid();
 
 createProjectFile("artwork.png");
-setStatus("Fizzpixl 0.5.0 ready");
+setStatus("Fizzpixl 0.6.0 ready");
